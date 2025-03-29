@@ -1,0 +1,234 @@
+    def action_create_rent_invoice(self):
+        """Invoice button for create invoice for rent order"""
+        invoice_total_qty_list = []
+        rent_total_qty_list = []
+        invoices = self.env['account.move'].search([('partner_id', '=', self.tenant_id.id),
+                       ("move_type", "=", "out_invoice"),
+                       ("ref", "=", self.sequence)])
+        for invoice in invoices:
+            for line in invoice.invoice_line_ids:
+                invoice_total_qty_list.append(line.quantity)
+                
+        invoice_total_qty = sum(invoice_total_qty_list)
+        
+        for rent_line in self.order_line_ids:
+            rent_total_qty_list.append((rent_line.property_qty))
+            
+        rent_total_qty = sum(rent_total_qty_list)
+        
+        if self.draft_invoice_count == 0 and self.invoice_count == 0:
+            invoice_obj = self.env["account.move"]
+            invoice_vals_list = []
+            for record in self:
+                invoice_vals = record._prepare_rent_invoice()
+                invoiceable_lines = record._get_rent_invoiceable_lines()
+                invoice_line_vals = []
+                for line in invoiceable_lines:
+                    invoice_line_vals.append(
+                        Command.create(
+                            line._prepare_rent_invoice_line()
+                        ),
+                    )
+                invoice_vals['invoice_line_ids'] += invoice_line_vals
+                invoice_vals_list.append(invoice_vals)
+                invoice = invoice_obj.create(invoice_vals_list)
+                # print(self.invoice_id)
+            if not invoice_line_vals:
+                raise ValidationError('Nothing to invoice')
+            self.invoice_id = invoice.id
+            invoice_id = invoice.id
+            body = "Invoice created!"
+            self.message_post(body=body)
+            return {
+                "name": "Customer Invoice",
+                "type": "ir.actions.act_window",
+                "res_model": "account.move",
+                "view_mode": "form",
+                "res_id": invoice_id,
+                "target": "current",
+            }
+        elif self.draft_invoice_count > 0:
+            draft_invoice = self.env['account.move'].search([('move_type','=', 'out_invoice'),
+                                                                  ('partner_id','=', self.tenant_id.id),
+                                                                  ('ref' ,'=', self.sequence),
+                                                             ('state' ,'=', 'draft')],limit = 1)
+
+            if draft_invoice :
+                invoice_line_vals = []
+                for line in self.order_line_ids:
+                    invoice_line_vals.append(
+                        Command.create(
+                            line._prepare_rent_invoice_line()
+                        ),
+                    )
+                draft_invoice.write({'invoice_line_ids' : [(5,0,0)]+[(0,0,line[2]) for line in invoice_line_vals]})
+                body_updated = "Draft invoice  updated!"
+                self.message_post(body=body_updated)
+                return {
+                    "name": "Customer Invoice",
+                    "type": "ir.actions.act_window",
+                    "res_model": "account.move",
+                    "view_mode": "form",
+                    "res_id": draft_invoice.id,
+                    "target": "current",
+                }
+            else:
+                print("Posted")
+        else:
+            if rent_total_qty > invoice_total_qty:
+                order_line_count = len(self.order_line_ids)
+                self.invoice_line_count = len(self.invoice_id.invoice_line_ids)
+                invoice_line_qty = sum(rec.quantity for rec in self.invoice_id.invoice_line_ids)
+                if self.invoice_line_count == 0:
+                    pass
+                elif self.invoice_line_count == order_line_count:
+                    if self.invoice_id.state == 'posted':
+                        order_quantities = []
+                        invoice_quantities = []
+                        if rent_total_qty > invoice_line_qty:
+                            for rec in self.order_line_ids:
+                                order_quantities.append({
+                                    'name': rec.property_name_id.name,
+                                    'quantity': rec.property_qty,
+                                    'price_unit': rec.property_amount,
+                                }),
+                            for rec in self.invoice_id.invoice_line_ids:
+                                invoice_quantities.append({
+                                    'name': rec.name,
+                                    'quantity': rec.quantity,
+                                    'price_unit': rec.price_unit,
+                                }),
+                            change_quantity_vals = []
+                            for x in range(len(order_quantities)):
+                                for y in range(len(invoice_quantities)):
+                                    if order_quantities[x].get('name') == invoice_quantities[y].get('name'):
+                                        if order_quantities[x].get('quantity') != invoice_quantities[y].get('quantity'):
+                                            quantity = order_quantities[x].get('quantity') - invoice_quantities[y].get(
+                                                'quantity')
+                                            price = order_quantities[x].get('price_unit')
+                                            change_quantity_vals.append(
+                                                Command.create({
+                                                    'name': order_quantities[x].get('name'),
+                                                    'quantity': quantity,
+                                                    'price_unit': price,
+                                                }),
+                                            )
+                                    else:
+                                        pass
+                            invoice_obj = self.env["account.move"]
+                            invoice_vals_list = []
+                            for record in self:
+                                invoice_vals = record._prepare_rent_invoice()
+                                invoice_vals['invoice_line_ids'] += change_quantity_vals
+                                invoice_vals_list.append(invoice_vals)
+                                invoice = invoice_obj.create(invoice_vals_list)
+                                record.invoice_id = invoice.id
+                                invoice_id = invoice.id
+                            return {
+                                "name": "Customer Invoice",
+                                "type": "ir.actions.act_window",
+                                "res_model": "account.move",
+                                "view_mode": "form",
+                                "res_id": invoice_id,
+                                "target": "current",
+                            }
+                        else:
+                            print("invoice quantity greater than rent quantity")
+                elif self.invoice_line_count < order_line_count:
+                    if self.invoice_id.state == 'posted':
+                        order_quantities = []
+                        invoice_quantities = []
+                        change_quantity_vals = []
+                        if rent_total_qty > invoice_line_qty:
+                            for rec in self.order_line_ids:
+                                order_quantities.append({
+                                    'name': rec.property_name_id.name,
+                                    'quantity': rec.property_qty,
+                                    'price_unit': rec.property_amount,
+                                }),
+                            for rec in self.invoice_id.invoice_line_ids:
+                                invoice_quantities.append({
+                                    'name': rec.name,
+                                    'quantity': rec.quantity,
+                                    'price_unit': rec.price_unit,
+                                }),
+                            for x in range(len(order_quantities)):
+                                for y in range(len(invoice_quantities)):
+                                    if order_quantities[x].get('name') == invoice_quantities[y].get('name'):
+                                        if order_quantities[x].get('quantity') != invoice_quantities[y].get('quantity'):
+                                            quantity = order_quantities[x].get('quantity') - invoice_quantities[y].get(
+                                                'quantity')
+                                            price = order_quantities[x].get('price_unit')
+                                            change_quantity_vals.append(
+                                                Command.create({
+                                                    'name': order_quantities[x].get('name'),
+                                                    'quantity': quantity,
+                                                    'price_unit': price,
+                                                }),
+                                            )
+                                        else:
+                                            pass
+                                    else:
+                                        pass
+                        else:
+                            pass
+                            print("Rent invoice quantity is less than invoiced quantity")
+                        names = []
+                        for rec in self.order_line_ids:
+                            names.append(rec.property_name_id.name)
+                        for rec in self.invoice_id.invoice_line_ids:
+                            if rec.name in names:
+                                names.remove(rec.name)
+                        for rec in self.order_line_ids:
+                            if rec.property_name_id.name in names:
+                                change_quantity_vals.append(
+                                    Command.create({
+                                        'name': rec.property_name_id.name,
+                                        'quantity': rec.property_qty,
+                                        'price_unit': rec.property_amount,
+                                    }),
+                                )
+                        if change_quantity_vals:
+                            invoice_obj = self.env["account.move"]
+                            invoice_vals_list = []
+                            for record in self:
+                                invoice_vals = record._prepare_rent_invoice()
+                                invoice_vals['invoice_line_ids'] += change_quantity_vals
+                                invoice_vals_list.append(invoice_vals)
+                                invoice = invoice_obj.create(invoice_vals_list)
+                                record.invoice_id = invoice.id
+                                invoice_id = invoice.id
+                            return {
+                                "name": "Customer Invoice",
+                                "type": "ir.actions.act_window",
+                                "res_model": "account.move",
+                                "view_mode": "form",
+                                "res_id": invoice_id,
+                                "target": "current",
+                            }
+                        else:
+                            print("Quantity_values not changed")
+                    else:
+                        print("State is Draft")
+                else:
+                    print("Rent and invoiced record are not satisfied the condition")
+            else:
+                print("invoice and rent total quantity is same")
+
+    def _prepare_rent_invoice(self):
+        self.ensure_one()
+        values = {
+            'move_type': 'out_invoice',
+            'partner_id': self.tenant_id.id,
+            'ref': self.sequence,
+            'invoice_line_ids': [],
+        }
+        return values
+
+    def _get_rent_invoiceable_lines(self):
+        invoiceable_line_ids = []
+        for line in self.order_line_ids:
+            invoiceable_line_ids.append(line.id)
+        return self.env['rent.order.lines'].browse(invoiceable_line_ids)
+
+
